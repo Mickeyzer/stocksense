@@ -3,6 +3,8 @@
 Compares statistical baselines, intermittent-demand methods and a global LightGBM
 model on accuracy (WAPE, RMSSE, dollar-weighted RMSSE) and on compute time.
 """
+import json
+import sys
 import time
 
 import lightgbm as lgb
@@ -31,6 +33,15 @@ LGB_PARAMS = {
     "num_threads": 0,
 }
 LGB_ROUNDS = 800
+TUNED = config.RESULTS_DIR / "lgb_tuned.json"
+
+
+def tuned_settings() -> tuple[dict, int, bool, float]:
+    """Settings chosen by src/tune.py on the validation window, or the defaults."""
+    if not TUNED.exists():
+        return LGB_PARAMS, LGB_ROUNDS, False, 0.5
+    t = json.loads(TUNED.read_text())
+    return {**LGB_PARAMS, **t["params_change"]}, t["rounds"], t["extra_features"], t["ensemble_weight_lgb"]
 
 STAT_MODELS = {
     "SeasonalNaive": SeasonalNaive(season_length=config.SEASON),
@@ -57,7 +68,7 @@ def run_statistical(panel: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     return pd.concat(fcs, axis=1).reset_index(), times
 
 
-def run_lightgbm(feat: pd.DataFrame) -> tuple[pd.DataFrame, float, lgb.Booster]:
+def run_lightgbm(feat: pd.DataFrame, params: dict, rounds: int) -> tuple[pd.DataFrame, float, lgb.Booster]:
     cols = feature_columns(feat)
     first_usable = feat["ds"].min() + pd.Timedelta(days=56)
     out, total, booster = [], 0.0, None
@@ -65,7 +76,7 @@ def run_lightgbm(feat: pd.DataFrame) -> tuple[pd.DataFrame, float, lgb.Booster]:
         train = feat[(feat["ds"] <= cutoff) & (feat["ds"] >= first_usable)]
         test = feat[(feat["ds"] > cutoff) & (feat["ds"] <= cutoff + pd.Timedelta(days=config.HORIZON))]
         t0 = time.perf_counter()
-        booster = lgb.train(LGB_PARAMS, lgb.Dataset(train[cols], train["y"]), LGB_ROUNDS)
+        booster = lgb.train(params, lgb.Dataset(train[cols], train["y"]), rounds)
         pred = np.clip(booster.predict(test[cols]), 0, None)
         total += time.perf_counter() - t0
         out.append(pd.DataFrame({"unique_id": test["unique_id"].values, "ds": test["ds"].values,
@@ -74,21 +85,28 @@ def run_lightgbm(feat: pd.DataFrame) -> tuple[pd.DataFrame, float, lgb.Booster]:
     return pd.concat(out), total, booster
 
 
-def main():
+def main(lgb_only: bool = False):
+    """lgb_only=True reuses saved statistical forecasts and only refits LightGBM."""
     config.RESULTS_DIR.mkdir(exist_ok=True)
     panel = load_panel()
     print(f"{panel['unique_id'].nunique()} series, {len(panel):,} rows")
 
-    print("Statistical models")
-    stat_fc, times = run_statistical(panel)
+    if lgb_only:
+        saved = pd.read_parquet(config.RESULTS_DIR / "daily_forecasts.parquet")
+        stat_fc = saved[["unique_id", "ds", "cutoff", "y"] + list(STAT_MODELS)]
+        times = pd.read_csv(config.RESULTS_DIR / "fit_times.csv", index_col=0)["seconds"].to_dict()
+    else:
+        print("Statistical models")
+        stat_fc, times = run_statistical(panel)
 
-    print("LightGBM")
-    feat = add_features(panel)
-    lgb_fc, times["LightGBM"], booster = run_lightgbm(feat)
+    params, rounds, extra, w = tuned_settings()
+    print(f"LightGBM ({rounds} rounds, extra features={extra}, ensemble weight={w})")
+    feat = add_features(panel, extra=extra)
+    lgb_fc, times["LightGBM"], booster = run_lightgbm(feat, params, rounds)
 
     fc = stat_fc.merge(lgb_fc, on=["unique_id", "ds", "cutoff"], how="inner")
-    # Equal-weight blend of the ML and statistical models (weights fixed, not tuned).
-    fc["Ensemble"] = (fc["LightGBM"] + fc["AutoETS"]) / 2
+    # Blend of the ML and statistical models; the weight was chosen on the validation window.
+    fc["Ensemble"] = w * fc["LightGBM"] + (1 - w) * fc["AutoETS"]
     times["Ensemble"] = times["LightGBM"] + times["AutoETS"]
     fc.to_parquet(config.RESULTS_DIR / "daily_forecasts.parquet", index=False)
     pd.Series(times, name="seconds").to_csv(config.RESULTS_DIR / "fit_times.csv")
@@ -117,4 +135,4 @@ def score(fc: pd.DataFrame, panel: pd.DataFrame, times: dict):
 
 
 if __name__ == "__main__":
-    main()
+    main(lgb_only="--lgb-only" in sys.argv)

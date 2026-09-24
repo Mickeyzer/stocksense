@@ -28,6 +28,7 @@ def load():
         "inv": pd.read_csv(R / "inventory_summary.csv"),
         "inv_week": pd.read_csv(R / "inventory_by_week.csv", parse_dates=["week_start"]),
         "coverage": pd.read_csv(R / "quantile_coverage.csv", index_col=0),
+        "sens": pd.read_csv(R / "cost_sensitivity.csv"),
     }
 
 
@@ -40,14 +41,15 @@ st.caption("Demand forecasting and capacity-constrained replenishment for 3,292 
 
 naive = scores.loc["SeasonalNaive"]
 best = scores.loc["Ensemble"]
-main_cap = inv[inv["capacity_multiplier"] == 1.15].set_index("policy")
+HEADLINE_MODE = "lead time 1 week"
+main_cap = inv[(inv["capacity_multiplier"] == 1.15) & (inv["mode"] == HEADLINE_MODE)].set_index("policy")
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Ensemble WRMSSE", f"{best.WRMSSE:.3f}", f"{best.WRMSSE / naive.WRMSSE - 1:+.1%} vs seasonal naive",
           delta_color="inverse")
 c2.metric("Ensemble WAPE", f"{best.WAPE:.1%}", f"{best.WAPE - naive.WAPE:+.1%} pts vs seasonal naive",
           delta_color="inverse")
 c3.metric("Inventory cost saving (ML + LP)", f"{main_cap.loc['ML + LP', 'cost_saving_vs_rule']:.1%}",
-          "vs tuned rule of thumb")
+          "vs tuned rule of thumb, 1-week lead time")
 c4.metric("Revenue captured (ML + LP)", f"${main_cap.loc['ML + LP', 'revenue'] / 1e6:.2f}M",
           f"{main_cap.loc['ML + LP', 'revenue'] / main_cap.loc['Rule of thumb', 'revenue'] - 1:+.1%} vs rule, same capacity")
 
@@ -119,9 +121,12 @@ with tab2:
 
 with tab3:
     caps = sorted(inv["capacity_multiplier"].unique())
+    mode = st.radio("Order lead time", ["lead time 1 week", "lead time 0"], horizontal=True,
+                    format_func=lambda m: "1 week (orders arrive next week)" if m.endswith("week") else "none (orders arrive immediately)")
+    inv_m = inv[inv["mode"] == mode]
     cap = st.select_slider("Store capacity (multiple of recent average weekly sales)", caps, value=1.15,
                            format_func=lambda c: "unlimited" if np.isinf(c) else f"{c:.2f}x")
-    s = inv[inv["capacity_multiplier"] == cap].set_index("policy").loc[
+    s = inv_m[inv_m["capacity_multiplier"] == cap].set_index("policy").loc[
         ["Rule of thumb", "ML point", "ML newsvendor", "ML + LP"]]
     st.dataframe(s[["total_cost", "holding_cost", "stockout_cost", "fill_rate", "avg_weekly_stock",
                     "cost_saving_vs_rule"]].style.format({
@@ -131,14 +136,25 @@ with tab3:
     fig = go.Figure()
     fig.add_trace(go.Bar(x=s.index, y=s["holding_cost"], name="holding"))
     fig.add_trace(go.Bar(x=s.index, y=s["stockout_cost"], name="lost margin"))
-    fig.update_layout(barmode="stack", title="Total cost over 12 weeks, 4 stores", height=380)
+    n_weeks = 9 if mode.endswith("week") else 12
+    fig.update_layout(barmode="stack", title=f"Total cost over {n_weeks} weeks, 4 stores", height=380)
     st.plotly_chart(fig, width="stretch")
-    sens = inv.pivot(index="capacity_multiplier", columns="policy", values="cost_saving_vs_rule")
+    sens = inv_m.pivot(index="capacity_multiplier", columns="policy", values="cost_saving_vs_rule")
     sens.index = ["unlimited" if np.isinf(i) else f"{i:.2f}x" for i in sens.index]
     st.markdown("**Cost saving vs rule of thumb, by capacity**")
     st.dataframe(sens.drop(columns="Rule of thumb").style.format("{:+.1%}"), width="stretch")
+    cs = d["sens"][(d["sens"]["mode"] == mode) & (d["sens"]["policy"] == "ML + LP")]
+    grid = cs.pivot(index="holding_frac", columns="stockout_frac", values="cost_saving_vs_rule")
+    fig = go.Figure(go.Heatmap(z=grid.values * 100, x=[f"{c:.0%}" for c in grid.columns],
+                               y=[f"{i:.0%}" for i in grid.index], colorscale="Blues",
+                               text=[[f"{v:+.1%}" for v in row] for row in grid.values], texttemplate="%{text}"))
+    fig.update_layout(title="ML + LP cost saving vs rule, across cost assumptions (capacity 1.15x)",
+                      xaxis_title="lost margin per unit short (% of price)",
+                      yaxis_title="holding cost per unit-week (% of price)", height=380)
+    st.plotly_chart(fig, width="stretch")
     st.caption("Rule-of-thumb and ML-point policies use the cover factor that minimised their own cost "
-               "(best case for them). Orders arrive at the start of each week; unmet demand is lost.")
+               "(best case for them). Unmet demand is lost. With a 1-week lead time, orders are sized from "
+               "2-week-ahead forecasts and projected stock; weeks 2-4 of each window are costed.")
 
 with tab4:
     weekly = d["weekly"]

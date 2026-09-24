@@ -1,0 +1,11 @@
+{
+  "config": "lr_0.03",
+  "params_change": {
+    "learning_rate": 0.03
+  },
+  "extra_features": true,
+  "rounds": 145,
+  "ensemble_weight_lgb": 0.5,
+  "validation_wrmsse": 0.8625242469019325,
+  "validation_cutoff": "2016-02-28"
+}

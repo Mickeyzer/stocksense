@@ -15,7 +15,7 @@ ROLL_WINDOWS = [7, 28, 56]
 CATEGORICAL = ["item_id", "store_id", "event_type", "dow"]
 
 
-def add_features(panel: pd.DataFrame) -> pd.DataFrame:
+def add_features(panel: pd.DataFrame, extra: bool = False) -> pd.DataFrame:
     df = panel.sort_values(["unique_id", "ds"]).reset_index(drop=True).copy()
     g = df.groupby("unique_id", sort=False)["y"]
     h = config.HORIZON
@@ -36,6 +36,16 @@ def add_features(panel: pd.DataFrame) -> pd.DataFrame:
     df["price_rel_max"] = (df["sell_price"] / p.cummax()).astype("float32")
     df["price_change_7"] = (df["sell_price"] / p.shift(7) - 1).astype("float32")
     df["price_rel_mean"] = (df["sell_price"] / p.transform("mean")).astype("float32")
+
+    if extra:
+        # Same-weekday average over four weeks (lags 28/35/42/49 share the target's weekday).
+        df["dow_mean_4"] = df[["lag_28", "lag_35", "lag_42", "lag_49"]].mean(axis=1).astype("float32")
+        df["ewm_28"] = gb.transform(lambda s: s.ewm(alpha=0.1, ignore_na=True).mean()).astype("float32")
+        df["price_change_28"] = (df["sell_price"] / p.shift(28) - 1).astype("float32")
+        # Chain-wide popularity of the item: its recent demand averaged across the four stores.
+        df["item_roll_28"] = df.groupby(["item_id", "ds"], observed=True)["roll_mean_28"] \
+            .transform("mean").astype("float32")
+        df["store_share"] = (df["roll_mean_28"] / (df["item_roll_28"] + 1e-3)).astype("float32")
 
     df["dow"] = df["ds"].dt.dayofweek.astype("int8")
     df["dom"] = df["ds"].dt.day.astype("int8")
