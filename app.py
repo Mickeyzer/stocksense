@@ -29,6 +29,8 @@ def load():
         "inv_week": pd.read_csv(R / "inventory_by_week.csv", parse_dates=["week_start"]),
         "coverage": pd.read_csv(R / "quantile_coverage.csv", index_col=0),
         "sens": pd.read_csv(R / "cost_sensitivity.csv"),
+        "value": pd.read_csv(R / "value_of_accuracy.csv"),
+        "decomp": pd.read_csv(R / "value_decomposition.csv"),
     }
 
 
@@ -53,7 +55,8 @@ c3.metric("Inventory cost saving (ML + LP)", f"{main_cap.loc['ML + LP', 'cost_sa
 c4.metric("Revenue captured (ML + LP)", f"${main_cap.loc['ML + LP', 'revenue'] / 1e6:.2f}M",
           f"{main_cap.loc['ML + LP', 'revenue'] / main_cap.loc['Rule of thumb', 'revenue'] - 1:+.1%} vs rule, same capacity")
 
-tab1, tab2, tab3, tab4 = st.tabs(["Forecast accuracy", "Item explorer", "Replenishment policies", "Order planner"])
+tab1, tab5, tab2, tab3, tab4 = st.tabs(["Forecast accuracy", "Value of accuracy", "Item explorer",
+                                        "Replenishment policies", "Order planner"])
 
 with tab1:
     st.subheader("Daily forecast accuracy, averaged over 3 backtest windows")
@@ -155,6 +158,40 @@ with tab3:
     st.caption("Rule-of-thumb and ML-point policies use the cover factor that minimised their own cost "
                "(best case for them). Unmet demand is lost. With a 1-week lead time, orders are sized from "
                "2-week-ahead forecasts and projected stock; weeks 2-4 of each window are costed.")
+
+with tab5:
+    st.subheader("What is a better forecast worth?")
+    st.markdown("Every model is pushed through the same 12-week replenishment simulation (forecast at the start of "
+                "each 28-day window, weekly orders, capacity 1.15x). All models share one uncertainty model "
+                "(negative binomial around the model's own mean), so cost differences come from accuracy alone.")
+    dec = d["decomp"]
+    fig = go.Figure(go.Waterfall(
+        x=dec["step"], measure=["absolute"] + ["relative"] * (len(dec) - 1),
+        y=[dec["cost"].iloc[0]] + list(-dec["saving"].iloc[1:]),
+        text=[f"${dec['cost'].iloc[0] / 1e3:,.1f}k"] + [f"-${v / 1e3:,.1f}k ({sh:.0%})" for v, sh in
+                                                        zip(dec["saving"].iloc[1:], dec["share_of_total_saving"].iloc[1:])],
+        textposition="outside", decreasing=dict(marker_color="#2563eb")))
+    fig.update_layout(title="Where the saving comes from (12 weeks, 4 stores)", yaxis_title="inventory cost ($)",
+                      height=420, yaxis_range=[0, dec["cost"].iloc[0] * 1.15])
+    st.plotly_chart(fig, width="stretch")
+    v = d["value"]
+    pts = v[v["model"] != "WeeklyLightGBM (learned quantiles)"]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=pts["weekly_WAPE"], y=pts["cost_point_policy"], mode="markers+text", name="simple policy",
+                             text=pts["model"], textposition="top center", marker=dict(size=11, color="#9ca3af")))
+    fig.add_trace(go.Scatter(x=pts["weekly_WAPE"], y=pts["cost_LP_policy"], mode="markers+text", name="LP optimizer",
+                             text=pts["model"], textposition="bottom center", marker=dict(size=11, color="#2563eb")))
+    fig.add_hline(y=v["rule_of_thumb_cost"].iloc[0], line_dash="dash", annotation_text="rule of thumb")
+    fig.update_layout(title="Weekly forecast error vs inventory cost", xaxis_title="weekly WAPE",
+                      yaxis_title="inventory cost ($)", xaxis_tickformat=".0%", height=480)
+    st.plotly_chart(fig, width="stretch")
+    st.dataframe(v[["model", "weekly_WAPE", "cost_point_policy", "cost_LP_policy", "fill_rate_LP", "revenue_LP"]]
+                 .set_index("model").style.format({"weekly_WAPE": "{:.1%}", "cost_point_policy": "${:,.0f}",
+                                                   "cost_LP_policy": "${:,.0f}", "fill_rate_LP": "{:.1%}",
+                                                   "revenue_LP": "${:,.0f}"}, na_rep="-"), width="stretch")
+    st.caption("Takeaways: the optimizer running on the simplest forecast (28-day moving average) costs less than the "
+               "best forecast run with a simple policy. Daily accuracy rankings do not carry over: AutoETS beats the "
+               "moving average on daily WRMSSE but is worse at the weekly level, where orders are placed, and costs more.")
 
 with tab4:
     weekly = d["weekly"]

@@ -14,6 +14,7 @@ validation window *before* all test windows.
 | Inventory cost vs a tuned rule of thumb (1.15x capacity) | **21.3% lower** with zero lead time, **12.6% lower** with a 1-week lead time |
 | Robustness | ML + LP had the lowest cost in **all 18 scenarios tested** (9 cost settings × 2 lead times) |
 | Revenue captured with the same shelf capacity | **+3.2% to +4.4%** vs the rule of thumb in all 18 scenarios |
+| Where the saving comes from | **48% from the optimizer**, 33% from the better forecast, 19% from learned uncertainty |
 
 ## Problem
 
@@ -145,6 +146,48 @@ savings below are conservative.
   where it's worth most in dollars. With unlimited capacity, the LP and the newsvendor give nearly the same
   result, as the theory predicts.
 
+### 5. What is forecast accuracy worth? (`src/value.py`)
+Every forecasting model is pushed through the same replenishment simulation, so its accuracy can be read as
+dollars. Forecasts are made once at the start of each 28-day window and used for that window's four weekly
+orders, so the daily models and the weekly model see the same information. To isolate accuracy, all models share
+**one uncertainty model**: next week's demand is negative binomial, with the model's own mean and a per-series
+spread estimated from the 8 weeks before the forecast. Capacity is 1.15x, lead time is zero, and costs are the
+defaults. The simulation covers 12 weeks and 4 stores.
+
+| Forecast | Weekly WAPE | Cost, simple policy (tuned cover) | Cost, LP optimizer |
+|---|---|---|---|
+| Seasonal naive | 39.3% | $99.1k | $88.6k |
+| Moving average (28) | 36.9% | $91.4k | $80.3k |
+| Croston | 39.8% | $94.5k | $82.6k |
+| IMAPA | 37.8% | $91.5k | $81.4k |
+| AutoETS | 38.6% | $93.9k | $84.1k |
+| LightGBM (daily, summed) | 37.5% | $91.7k | $80.9k |
+| Ensemble (daily, summed) | 35.5% | $85.7k | $75.7k |
+| **Weekly LightGBM** | **34.7%** | **$84.8k** | $75.1k |
+| **Weekly LightGBM + its own learned quantiles** | 34.7% | – | **$71.2k** |
+
+The rule of thumb costs $91.4k. The $20.2k (22.1%) saving from the rule of thumb to the full system breaks down as:
+
+| Step | Cost | Saving | Share |
+|---|---|---|---|
+| Rule of thumb | $91.4k | | |
+| Best forecast, same simple policy | $84.8k | $6.6k | 33% |
+| + LP optimizer | $75.1k | $9.7k | **48%** |
+| + learned uncertainty instead of a fixed distribution | $71.2k | $3.9k | 19% |
+
+**What this shows:**
+- **Better decisions are worth more than a better model.** The optimizer running on the *simplest* forecast
+  (moving average, $80.3k) beats the *best* forecast run with a simple policy ($84.8k). The optimizer cuts cost
+  by 10–13% whichever forecast it's given.
+- **Measure accuracy at the level decisions are made.** AutoETS beats the moving average on daily WRMSSE, but it's
+  worse at the weekly level, where orders are placed, and it costs more. Summing daily forecasts loses to
+  forecasting the weekly total directly.
+- **Forecast accuracy does matter.** Across models, weekly error and cost are strongly correlated (r = 0.89 under
+  the LP), and the most accurate forecasts give the lowest costs under both policies.
+- **Learning the uncertainty matters too.** Swapping the fixed distribution for the model's own quantiles saves
+  another $3.9k. The quantile models set a separate spread for each item-week from the same features as the
+  forecast (prices, events, recent volatility), instead of relying on history alone.
+
 ## Dashboard
 
 ```
@@ -153,6 +196,7 @@ streamlit run app.py
 
 The dashboard has four tabs:
 - **Forecast accuracy:** the model table, an accuracy-vs-compute chart, feature importance and quantile calibration.
+- **Value of accuracy:** a waterfall of where the saving comes from, and forecast error vs inventory cost for every model.
 - **Item explorer:** daily forecasts per model and a weekly fan chart for any item and store.
 - **Replenishment policies:** switch between lead times, see cost breakdowns, the capacity sensitivity analysis
   and a heatmap of cost assumptions.
@@ -162,8 +206,8 @@ The dashboard has four tabs:
 ## Reproduce
 
 ```
-python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
-python run_all.py            # downloads M5 (~50 MB), about 45 minutes on 12 cores
+python -m venv .venv && .venv/Scripts/pip install -r requirements-pipeline.txt
+python run_all.py            # downloads M5 (~50 MB), about 1 hour on 12 cores
 python -m src.backtest --lgb-only   # refit only LightGBM, reusing saved statistical forecasts
 pytest -q                    # metric and optimizer unit tests
 ```
@@ -186,6 +230,7 @@ src/metrics.py    WAPE, RMSSE, WRMSSE, bias, pinball
 src/weekly.py     weekly mean + quantile models
 src/optimize.py   CVXPY replenishment LP
 src/simulate.py   policy simulation (two lead-time modes, cost sensitivity)
+src/value.py      value of forecast accuracy: every model through the same simulation
 app.py            Streamlit dashboard
 tests/            unit tests
 ```

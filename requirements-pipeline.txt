@@ -1,0 +1,6 @@
+-r requirements.txt
+lightgbm>=4.3
+statsforecast>=2.0
+datasetsforecast>=1.0
+scipy>=1.11
+pytest>=8

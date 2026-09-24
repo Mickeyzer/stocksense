@@ -88,8 +88,13 @@ def store_capacity(sw: pd.DataFrame, cap_mult: float) -> float:
 
 def run_policy(fc: pd.DataFrame, policy: str, cap_mult: float, factor: float = 1.0,
                costs: Costs = Costs()) -> pd.DataFrame:
-    """Lead time 0."""
-    weeks = fc[fc["k"] == 1]
+    """Lead time 0, re-forecasting at the start of every week (1-week-ahead forecasts)."""
+    return run_weeks(fc[fc["k"] == 1], policy, cap_mult, factor, costs)
+
+
+def run_weeks(weeks: pd.DataFrame, policy: str, cap_mult: float, factor: float = 1.0,
+              costs: Costs = Costs()) -> pd.DataFrame:
+    """Lead time 0 over pre-selected rows: exactly one forecast row per item-store-week."""
     out = []
     for store, sw in weeks.groupby("store_id"):
         capacity = store_capacity(sw, cap_mult)
