@@ -194,7 +194,7 @@ The rule of thumb costs $91.4k. The $20.2k (22.1%) saving from the rule of thumb
 streamlit run app.py
 ```
 
-The dashboard has four tabs:
+The dashboard has five tabs:
 - **Forecast accuracy:** the model table, an accuracy-vs-compute chart, feature importance and quantile calibration.
 - **Value of accuracy:** a waterfall of where the saving comes from, and forecast error vs inventory cost for every model.
 - **Item explorer:** daily forecasts per model and a weekly fan chart for any item and store.
