@@ -1,5 +1,8 @@
 # StockSense: demand forecasting and capacity-constrained replenishment
 
+**Live demo: [stocksense-m5.streamlit.app](https://stocksense-m5.streamlit.app/)**. Explore the forecasts, the
+replenishment policies and a live order planner that re-runs the optimizer with your own settings.
+
 StockSense forecasts daily and weekly demand for **3,292 Walmart item-store series** and turns those forecasts into
 stocking decisions. The decisions come from a linear program that decides how to split limited store capacity
 across items. Every number below comes from a rolling-origin backtest on real data. The last test window is the
